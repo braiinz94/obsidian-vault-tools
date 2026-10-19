@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "obsidian-vault-tools"
+version = "0.1.0"
+description = "Outils en ligne de commande pour entretenir un coffre Obsidian : lint, liens cassés, frontmatter, bilan de santé, empreintes."
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+authors = [{ name = "Mourad Barkaoui" }]
+requires-python = ">=3.12"
+dependencies = [
+    "pyyaml>=6.0",
+    "rapidfuzz>=3.0",
+]
+keywords = ["obsidian", "markdown", "wikilinks", "lint", "knowledge-base"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Environment :: Console",
+    "Topic :: Text Processing :: Markup :: Markdown",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8",
+    "pytest-cov>=5",
+    "ruff>=0.6",
+]
+
+[project.scripts]
+vault-lint = "obsidian_vault_tools.lint:main"
+vault-health = "obsidian_vault_tools.health_check:main"
+vault-links = "obsidian_vault_tools.link_resolver:main"
+vault-frontmatter = "obsidian_vault_tools.frontmatter_normalizer:main"
+vault-hash = "obsidian_vault_tools.content_hash:main"
+vault-me-audit = "obsidian_vault_tools.me_audit:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "SIM", "RUF"]
