@@ -39,5 +39,8 @@ jobs:
           ruff check .
           ruff format --check .
 
+      - name: Types (mypy)
+        run: mypy src
+
       - name: Tests
         run: pytest -q --cov=src --cov-report=term-missing

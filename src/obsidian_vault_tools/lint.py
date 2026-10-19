@@ -27,8 +27,10 @@ import argparse
 import os
 import sys
 import time
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from ._common import (
     extract_wikilinks,
@@ -168,6 +170,26 @@ def check_hub_coverage(root: Path, vault: Path, cfg: LintConfig) -> tuple[list[s
     return outside, stale
 
 
+def _link(target: str, source: str, names: set[str], incoming: dict[str, set[str]]) -> bool:
+    """Enregistre le lien entrant ; renvoie False si la cible n'existe pas."""
+    for name in (target, _basename(target)):
+        if name in names:
+            incoming[name].add(source)
+            return True
+    return False
+
+
+def _check_frontmatter(fm: object, rel: str, report: LintReport) -> None:
+    if fm is None:
+        report.fm_missing.append(rel)
+    elif not isinstance(fm, dict):
+        report.fm_invalid.append(rel)
+    else:
+        missing = REQUIRED_FIELDS - set(fm)
+        if missing:
+            report.fm_invalid.append(f"{rel} (manque : {','.join(sorted(missing))})")
+
+
 def run_lint(vault: Path, root: Path, cfg: LintConfig) -> LintReport:
     report = LintReport(vault=vault)
     files = md_files(root, cfg.exclude)
@@ -187,32 +209,17 @@ def run_lint(vault: Path, root: Path, cfg: LintConfig) -> LintReport:
         contested_by_stem[f.stem] = _is_contested(fm)
         links = extract_wikilinks(text)
         outgoing[f.stem] = links
-        for target in links:
-            if target in names:
-                incoming[target].add(f.stem)
-            elif _basename(target) in names:
-                incoming[_basename(target)].add(f.stem)
-            else:
-                report.broken.append((f.relative_to(vault).as_posix(), target))
-
         rel = f.relative_to(vault).as_posix()
-        if fm is None:
-            report.fm_missing.append(rel)
-        elif fm == "invalid":
-            report.fm_invalid.append(rel)
-        else:
-            missing = REQUIRED_FIELDS - set(fm)
-            if missing:
-                report.fm_invalid.append(f"{rel} (manque : {','.join(sorted(missing))})")
+        for target in links:
+            if not _link(target, f.stem, names, incoming):
+                report.broken.append((rel, target))
+        _check_frontmatter(fm, rel, report)
 
     # Les fichiers de service (index.md, README.md…) comptent comme liens entrants,
     # mais ne sont pas lintés : ils contiennent souvent des exemples de syntaxe.
     for f in service_files:
         for target in extract_wikilinks(f.read_text(encoding="utf-8", errors="replace")):
-            if target in names:
-                incoming[target].add(f.stem)
-            elif _basename(target) in names:
-                incoming[_basename(target)].add(f.stem)
+            _link(target, f.stem, names, incoming)
 
     report.orphans = sorted(
         {f.stem for f in files if not outgoing.get(f.stem) and not incoming.get(f.stem)}
@@ -238,7 +245,7 @@ def run_lint(vault: Path, root: Path, cfg: LintConfig) -> LintReport:
     return report
 
 
-def _print_list(items: list, fmt=str) -> None:
+def _print_list(items: Sequence[object], fmt: Callable[[Any], str] = str) -> None:
     for item in items[:MAX_LISTED]:
         print(f"  - {fmt(item)}")
     if len(items) > MAX_LISTED:

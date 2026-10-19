@@ -20,6 +20,7 @@ import re
 from collections import Counter, defaultdict
 from datetime import date, datetime
 from pathlib import Path
+from typing import Any
 
 from ._common import extract_wikilinks, iter_markdown, notes_root, parse_frontmatter, resolve_vault
 
@@ -29,6 +30,10 @@ COMPILE_MAX_DAYS = 7
 VERIFY_MAX_DAYS = 30
 CLUSTER_MIN = 5
 CLUSTER_MAX = 50
+RARE_TAG_SHARE = 0.2  # tag porté par moins de 20 % des occurrences du cluster
+RARE_TAG_MAX = 3  # … et moins de 3 fois
+MIN_COMMON_REFS = 3
+PAIRWISE_LIMIT = 500  # au-delà, la comparaison tous contre tous est échantillonnée
 
 
 def parse_date(v: object) -> date | None:
@@ -133,7 +138,14 @@ def check_frontmatter_drift(pages: list[Page], wiki: Path) -> list[dict]:
     for cluster, tag_counts in by_cluster_tags.items():
         total = sum(tag_counts.values())
         # Tag porté par moins de 20 % des occurrences et moins de 3 fois : valeur aberrante possible
-        rare = [(t, n) for t, n in tag_counts.items() if n / max(total, 1) < 0.2 and n < 3]
+        rare = sorted(
+            (
+                (t, n)
+                for t, n in tag_counts.items()
+                if n / max(total, 1) < RARE_TAG_SHARE and n < RARE_TAG_MAX
+            ),
+            key=lambda x: (x[1], x[0]),
+        )
         if rare:
             drift.append({"cluster": cluster, "rare_tags": rare[:5]})
     return drift
@@ -144,16 +156,16 @@ def check_isolated_concepts(pages: list[Page]) -> list[dict]:
     stems = list(outgoing)
     # Comparaison tous contre tous en O(n²) : au-delà de 500 notes, on se limite
     # aux notes peu liées (1 ou 2 liens sortants), les plus susceptibles d'être isolées.
-    if len(stems) > 500:
-        stems = [s for s in stems if 0 < len(outgoing[s]) < 3][:200]
+    if len(stems) > PAIRWISE_LIMIT:
+        stems = [s for s in stems if 0 < len(outgoing[s]) < MIN_COMMON_REFS][:200]
 
-    isolated = []
+    isolated: list[dict[str, Any]] = []
     for i, s1 in enumerate(stems):
         for s2 in stems[i + 1 :]:
             if s2 in outgoing[s1] or s1 in outgoing[s2]:
                 continue
             common = outgoing[s1] & outgoing[s2]
-            if len(common) >= 3:
+            if len(common) >= MIN_COMMON_REFS:
                 isolated.append(
                     {"pages": (s1, s2), "common_refs": len(common), "sample": sorted(common)[:3]}
                 )

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -67,7 +68,7 @@ def body_of(text: str) -> str:
     return split_frontmatter(text)[1]
 
 
-def parse_frontmatter(text: str) -> dict | str | None:
+def parse_frontmatter(text: str) -> dict[str, Any] | str | None:
     """dict si valide, "invalid" si YAML illisible, None si absent."""
     if not text.startswith("---"):
         return None
@@ -86,8 +87,8 @@ def extract_wikilinks(text: str) -> set[str]:
     targets = set()
     for raw in WIKILINK.findall(body_of(text)):
         # Dans un tableau Markdown, l'alias s'écrit \| : on le déséchappe avant de couper
-        raw = raw.replace("\\|", "|")
-        targets.add(raw.split("|")[0].split("#")[0].strip())
+        link = raw.replace("\\|", "|")
+        targets.add(link.split("|")[0].split("#")[0].strip())
     return targets
 
 

@@ -12,6 +12,7 @@ from __future__ import annotations
 import argparse
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -71,7 +72,7 @@ def normalize(
     if fm is None:
         return "yaml invalide (ignorée)"
 
-    defaults = {
+    defaults: dict[str, Any] = {
         "date": infer_date(path),
         "tags": [],
         "type": infer_type(path),

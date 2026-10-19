@@ -126,13 +126,14 @@ scripts/scrub.sh ~/mon-coffre
 SCRUB_INDEX_CMD="python3 outils/regen_index.py --check" scripts/scrub.sh ~/mon-coffre
 ```
 
-Lance le lint et, si `SCRUB_INDEX_CMD` est défini, votre propre contrôle d'index générés. Sort 1 si l'un échoue. Le paquet doit être installé (ou `PYTHON` pointer vers un interpréteur qui le trouve).
+Lance le lint et, si `SCRUB_INDEX_CMD` est défini, votre propre contrôle d'index générés. Sort 1 si l'un échoue. Ce script n'est pas inclus dans le paquet pip : il se récupère avec le dépôt. Le paquet doit être installé (ou `PYTHON` pointer vers un interpréteur qui le trouve).
 
 ## Développement
 
 ```bash
 python -m pip install -e ".[dev]"
 ruff check . && ruff format --check .
+mypy src
 pytest -q
 ```
 

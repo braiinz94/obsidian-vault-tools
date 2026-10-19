@@ -22,6 +22,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+from collections.abc import Callable
 from pathlib import Path
 
 from rapidfuzz import fuzz, process
@@ -77,6 +78,13 @@ def collect_broken(files: list[Path], names: set[str]) -> dict[tuple[Path, str],
     return broken
 
 
+def _replacer(new: str) -> Callable[[re.Match[str]], str]:
+    def repl(m: re.Match[str]) -> str:
+        return f"[[{new}{m.group(1)}"
+
+    return repl
+
+
 def apply_replacements(replacements: dict[tuple[Path, str], str]) -> int:
     """Réécrit les cibles dans le corps des notes. Renvoie le nombre de fichiers modifiés."""
     by_file: dict[Path, list[tuple[str, str]]] = {}
@@ -89,7 +97,8 @@ def apply_replacements(replacements: dict[tuple[Path, str], str]) -> int:
         new_body = body
         for old, new in edits:
             pattern = re.compile(r"\[\[" + re.escape(old) + r"(\]|\||#)")
-            new_body = pattern.sub(lambda m, new=new: f"[[{new}{m.group(1)}", new_body)
+            # Remplacement par fonction : un « \ » dans la cible reste littéral
+            new_body = pattern.sub(_replacer(new), new_body)
         if new_body != body:
             path.write_text(fm + new_body, encoding="utf-8")
             changed += 1

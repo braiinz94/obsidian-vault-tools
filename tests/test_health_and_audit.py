@@ -107,3 +107,26 @@ def test_me_audit_custom_paths(vault, tmp_path):
     checks = {c.name: c.ok for c in me_audit.run_audit(vault.root, json.loads(cfg.read_text()))}
     assert checks["P2 Modèles — section de pile dans les instructions d'agent"]
     assert me_audit.main([str(vault.root), "--config", str(cfg)]) == 1
+
+
+def test_health_text_report_lists_findings(vault, capsys, monkeypatch):
+    monkeypatch.setattr(health_check, "date", type("D", (), {"today": staticmethod(lambda: TODAY)}))
+    vault.note(
+        "clip.md", base=vault.root / "raw", frontmatter=dated("2026-05-01", tags="[to-compile]")
+    )
+    vault.note("vieille.md", frontmatter=dated("2026-03-01", status="to-verify"))
+    for i in range(51):
+        vault.note(f"g{i}.md", tags="commun", cluster="gros")
+    vault.note("g-rare.md", tags="rare", cluster="gros")
+    for name in ("Un", "Deux"):
+        vault.note(f"{name}.md", "[[X]] [[Y]] [[Z]]")
+    vault.note("Note-Finale.md")
+    vault.note("sous/note_finale.md")
+    assert health_check.main([str(vault.root)]) == 0
+    out = capsys.readouterr().out
+    assert "raw/clip.md (cluster=alpha, 31 j)" in out
+    assert "wiki/vieille.md (92 j)" in out
+    assert "gros : 52 notes (surchargé)" in out
+    assert "gros : rare (1)" in out
+    assert "[[Deux]] <-> [[Un]] (3 liens communs)" in out or "[[Un]] <-> [[Deux]]" in out
+    assert "notefinale :" in out
