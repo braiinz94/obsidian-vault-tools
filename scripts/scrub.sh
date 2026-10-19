@@ -9,7 +9,9 @@
 # Variables :
 #   OBSIDIAN_VAULT     chemin du coffre (si pas d'argument)
 #   SCRUB_INDEX_CMD    commande facultative qui vérifie vos index générés
-#                      (doit sortir != 0 en cas de dérive), lancée depuis le coffre
+#                      (doit sortir != 0 en cas de dérive), lancée depuis le coffre.
+#                      Elle est exécutée telle quelle : ne la remplissez qu'avec
+#                      une commande de confiance.
 #   PYTHON             interpréteur (défaut : python3)
 set -u
 
@@ -25,13 +27,13 @@ echo "── SCRUB $(date -u +%FT%TZ) ──"
 
 echo "1. Index générés ↔ sources"
 if [ -n "${SCRUB_INDEX_CMD:-}" ]; then
-  (cd "$V" && sh -c "$SCRUB_INDEX_CMD") || rc=1
+  (cd -- "$V" && sh -c "$SCRUB_INDEX_CMD") || rc=1
 else
   echo "   (ignoré : SCRUB_INDEX_CMD non défini)"
 fi
 
 echo "2. Intégrité du coffre (lint)"
-"$PY" -m obsidian_vault_tools.lint "$V" | grep -E "^## (Broken|Orphans|Frontmatter|Contested|Structure|Security)"
+"$PY" -m obsidian_vault_tools.lint -- "$V" | grep -E "^## (Broken|Orphans|Frontmatter|Contested|Structure|Security)"
 [ "${PIPESTATUS[0]}" -eq 0 ] || rc=1
 
 echo "── fin scrub (exit $rc) ──"

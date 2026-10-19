@@ -14,7 +14,7 @@ import hashlib
 import re
 from pathlib import Path
 
-from ._common import iter_markdown, resolve_vault, split_frontmatter
+from ._common import BOM, iter_markdown, resolve_vault, safe, split_frontmatter, warn
 
 
 def body_only(text: str) -> str:
@@ -25,16 +25,26 @@ def body_only(text: str) -> str:
 
 
 def hash_text(text: str) -> str:
-    return hashlib.sha256(body_only(text).encode("utf-8")).hexdigest()
+    # surrogateescape : un octet non UTF-8 garde son identité au lieu de devenir « � »
+    return hashlib.sha256(body_only(text).encode("utf-8", "surrogateescape")).hexdigest()
+
+
+def hash_file(path: Path) -> str:
+    text = path.read_bytes().decode("utf-8", "surrogateescape").removeprefix(BOM)
+    # Fins de ligne normalisées : une conversion CRLF ↔ LF ne change pas le contenu
+    return hash_text(text.replace("\r\n", "\n").replace("\r", "\n"))
 
 
 def hash_dir(root: Path) -> list[tuple[str, str]]:
     """Liste (chemin relatif, sha256) triée par chemin."""
     root = Path(root)
-    return [
-        (p.relative_to(root).as_posix(), hash_text(p.read_text(encoding="utf-8", errors="replace")))
-        for p in iter_markdown(root)
-    ]
+    hashes = []
+    for p in iter_markdown(root):
+        try:
+            hashes.append((p.relative_to(root).as_posix(), hash_file(p)))
+        except OSError as exc:
+            warn(f"{p} illisible ({exc.strerror})")
+    return hashes
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -42,7 +52,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("root", nargs="?", help="dossier à empreinter (défaut : $OBSIDIAN_VAULT)")
     args = parser.parse_args(argv)
     for rel, digest in hash_dir(resolve_vault(args.root)):
-        print(f"{digest}  {rel}")
+        print(f"{digest}  {safe(rel)}")
     return 0
 
 

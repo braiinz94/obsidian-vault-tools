@@ -22,7 +22,7 @@ import re
 from dataclasses import dataclass
 from pathlib import Path
 
-from ._common import resolve_vault
+from ._common import VaultError, iter_files, read_text, resolve_vault, safe
 
 DEFAULT_PATHS = {
     "agent_instructions": "CLAUDE.md",
@@ -47,10 +47,8 @@ def run_audit(vault: Path, paths: dict[str, str] | None = None) -> list[Check]:
     p = {**DEFAULT_PATHS, **(paths or {})}
 
     def read(key: str) -> str:
-        try:
-            return (vault / p[key]).read_text(encoding="utf-8")
-        except (FileNotFoundError, IsADirectoryError):
-            return ""
+        path = vault / p[key]
+        return (read_text(path) or "") if path.is_file() else ""
 
     def exists(key: str) -> bool:
         return (vault / p[key]).exists()
@@ -60,7 +58,7 @@ def run_audit(vault: Path, paths: dict[str, str] | None = None) -> list[Check]:
     both = (agent_md + "\n" + moc).lower()
     log = read("log")
     scripts = vault / p["scripts_dir"]
-    notes = sum(1 for f in vault.rglob("*.md") if ".git" not in f.parts)
+    notes = sum(1 for _ in iter_files(vault))
 
     return [
         # Piliers de la pile (6)
@@ -121,6 +119,22 @@ def run_audit(vault: Path, paths: dict[str, str] | None = None) -> list[Check]:
     ]
 
 
+def load_config(vault: Path, config: Path) -> dict[str, str]:
+    """Chemins de remplacement : clés connues, chemins relatifs restant dans le coffre."""
+    try:
+        data = json.loads(config.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise VaultError(f"configuration illisible : {exc}") from exc
+    if not isinstance(data, dict):
+        raise VaultError("la configuration doit être un objet JSON")
+    for key, value in data.items():
+        if key not in DEFAULT_PATHS:
+            raise VaultError(f"clé inconnue : {safe(key)} (attendues : {', '.join(DEFAULT_PATHS)})")
+        if not isinstance(value, str) or not (vault / value).resolve().is_relative_to(vault):
+            raise VaultError(f"chemin invalide pour {key} : {safe(value)}")
+    return data
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="vault-me-audit", description=__doc__.splitlines()[0])
     parser.add_argument("vault", nargs="?", help="chemin du coffre (défaut : $OBSIDIAN_VAULT)")
@@ -130,15 +144,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     vault = resolve_vault(args.vault)
-    paths = json.loads(args.config.read_text(encoding="utf-8")) if args.config else None
-    checks = run_audit(vault, paths)
+    checks = run_audit(vault, load_config(vault, args.config) if args.config else None)
     passed = sum(c.ok for c in checks)
 
-    print(f"# Audit Markdown Engineering — {passed}/{len(checks)} contrôles passés\n")
+    def _out(line: str = "") -> None:
+        print(safe(line))
+
+    _out(f"# Audit Markdown Engineering — {passed}/{len(checks)} contrôles passés\n")
     for c in checks:
-        print(f"[{'PASS' if c.ok else 'FAIL'}] {c.name}")
+        _out(f"[{'PASS' if c.ok else 'FAIL'}] {c.name}")
         if not c.ok and c.hint:
-            print(f"       -> {c.hint}")
+            _out(f"       -> {c.hint}")
     print()
     if passed == len(checks):
         print("VERT — coffre conforme à la pile markdown.engineering.")

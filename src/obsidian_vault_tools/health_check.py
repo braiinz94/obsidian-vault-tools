@@ -22,7 +22,15 @@ from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 
-from ._common import extract_wikilinks, iter_markdown, notes_root, parse_frontmatter, resolve_vault
+from ._common import (
+    extract_wikilinks,
+    iter_markdown,
+    notes_root,
+    parse_frontmatter,
+    read_text,
+    resolve_vault,
+    safe,
+)
 
 Page = tuple[Path, dict, str]
 
@@ -70,7 +78,9 @@ def load_pages(roots: list[Path], cluster: str | None = None) -> list[Page]:
             if p in seen:
                 continue
             seen.add(p)
-            text = p.read_text(encoding="utf-8", errors="replace")
+            text = read_text(p)
+            if text is None:
+                continue
             fm = parse_frontmatter(text)
             if not isinstance(fm, dict):
                 continue
@@ -208,25 +218,29 @@ def total_issues(report: dict) -> int:
     )
 
 
-def print_report(vault: Path, r: dict) -> None:
-    print(f"# Bilan de santé — {vault}")
-    print(f"\n## Notes analysées (frontmatter valide) : {r['pages']}")
+def _out(line: str = "") -> None:
+    print(safe(line))
 
-    print(
+
+def print_report(vault: Path, r: dict) -> None:
+    _out(f"# Bilan de santé — {vault}")
+    _out(f"\n## Notes analysées (frontmatter valide) : {r['pages']}")
+
+    _out(
         f"\n## 1. Notes `to-compile` vieillissantes (>{COMPILE_MAX_DAYS} j) : "
         f"{len(r['to_compile_aging'])}"
     )
     for item in r["to_compile_aging"][:10]:
-        print(f"  - {item['path']} (cluster={item['cluster']}, {item['days']} j)")
+        _out(f"  - {item['path']} (cluster={item['cluster']}, {item['days']} j)")
 
-    print(
+    _out(
         f"\n## 2. Notes `to-verify` stagnantes (>{VERIFY_MAX_DAYS} j) : "
         f"{len(r['to_verify_stagnant'])}"
     )
     for item in r["to_verify_stagnant"][:10]:
-        print(f"  - {item['path']} ({item['days']} j)")
+        _out(f"  - {item['path']} ({item['days']} j)")
 
-    print("\n## 3. Répartition des clusters")
+    _out("\n## 3. Répartition des clusters")
     for c, n in sorted(r["cluster_distribution"]["distribution"].items(), key=lambda x: -x[1]):
         if n < CLUSTER_MIN:
             mark = " (anémique)"
@@ -234,28 +248,28 @@ def print_report(vault: Path, r: dict) -> None:
             mark = " (surchargé)"
         else:
             mark = ""
-        print(f"  - {c} : {n} notes{mark}")
+        _out(f"  - {c} : {n} notes{mark}")
 
-    print(f"\n## 4. Dérive du frontmatter (tags rares) : {len(r['frontmatter_drift'])} clusters")
+    _out(f"\n## 4. Dérive du frontmatter (tags rares) : {len(r['frontmatter_drift'])} clusters")
     for item in r["frontmatter_drift"][:5]:
         rare = ", ".join(f"{t} ({n})" for t, n in item["rare_tags"][:3])
-        print(f"  - {item['cluster']} : {rare}")
+        _out(f"  - {item['cluster']} : {rare}")
 
-    print(
+    _out(
         "\n## 5. Concepts isolés (>= 3 liens communs, sans lien mutuel) : "
         f"{len(r['isolated_concepts'])}"
     )
     for item in r["isolated_concepts"][:10]:
         a, b = item["pages"]
-        print(f"  - [[{a}]] <-> [[{b}]] ({item['common_refs']} liens communs)")
+        _out(f"  - [[{a}]] <-> [[{b}]] ({item['common_refs']} liens communs)")
 
-    print(f"\n## 6. Titres quasi identiques : {len(r['duplicate_titles'])}")
+    _out(f"\n## 6. Titres quasi identiques : {len(r['duplicate_titles'])}")
     for slug, paths in r["duplicate_titles"][:10]:
-        print(f"  - {slug} :")
+        _out(f"  - {slug} :")
         for p in paths:
-            print(f"      {p}")
+            _out(f"      {p}")
 
-    print(f"\n---\nTotal des points relevés : {total_issues(r)}")
+    _out(f"\n---\nTotal des points relevés : {total_issues(r)}")
 
 
 def main(argv: list[str] | None = None) -> int:

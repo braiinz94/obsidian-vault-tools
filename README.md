@@ -2,7 +2,15 @@
 
 Petits outils en ligne de commande pour garder un coffre [Obsidian](https://obsidian.md) propre quand il grossit : liens cassés, notes orphelines, frontmatter incomplet, notes oubliées, doublons. Écrits pour mon propre coffre (plus de mille notes, alimenté en partie par des agents IA), puis généralisés.
 
-Tout tourne en local, sans réseau. Seuls `vault-links` et `vault-frontmatter` modifient des fichiers, et les deux ont un mode `--dry-run`.
+Tout tourne en local, sans réseau. Seuls `vault-links` et `vault-frontmatter` modifient des fichiers ; les deux ont un mode `--dry-run`, et leurs écritures sont prudentes :
+
+- chaque fichier est remplacé de façon atomique (fichier temporaire puis remplacement), avec ses droits, ses fins de ligne et son éventuel BOM ;
+- un fichier qui n'est pas en UTF-8, illisible, ou dont le frontmatter ne peut pas être complété proprement est laissé intact et signalé ;
+- un lien symbolique qui sort du coffre n'est jamais lu ni réécrit ;
+- le frontmatter est lu avec un chargeur YAML sûr qui refuse aussi les ancres et alias (pas de « bombe » YAML) ;
+- le texte des notes affiché dans le terminal est neutralisé (pas de séquences d'échappement).
+
+Faites tout de même une sauvegarde (ou un commit) du coffre avant la première écriture.
 
 ## Installation
 
@@ -61,7 +69,7 @@ vault-lint --exclude genere --structured-root Projets --forbid-git-remote
 
 Contrôles bloquants (code de sortie 1) :
 
-1. **Liens cassés** — `[[Note]]`, `[[dossier/Note]]`, `[[Note|alias]]`, `[[Note#titre]]`, et `[[Note\|alias]]` dans un tableau. Les liens du frontmatter sont ignorés : ce sont des métadonnées.
+1. **Liens cassés** — résolus comme le fait Obsidian, dans tout le coffre et sans tenir compte de la casse : `[[Note]]`, `[[Note.md]]`, `[[dossier/Note]]`, `[[Note|alias]]`, `[[Note#titre]]`, `[[#titre]]`, `[[Note\|alias]]` dans un tableau, et les pièces jointes (`![[schema.png]]`). Les liens du frontmatter, des blocs de code, du code en ligne (`` `[[x]]` ``) et des commentaires `%%…%%` sont ignorés : Obsidian ne les affiche pas comme liens.
 2. **Orphelines** — ni lien sortant, ni lien entrant.
 3. **Frontmatter absent**.
 4. **Frontmatter invalide ou incomplet** — `date`, `tags`, `type`, `status` sont requis.
@@ -90,7 +98,9 @@ vault-links ~/mon-coffre --auto                 # appliquer, cas ambigus → amb
 vault-links ~/mon-coffre --apply decisions.json # appliquer vos arbitrages
 ```
 
-Dans l'ordre : un lien préfixé par un chemin dont le nom seul existe est réécrit (`[[a/b/Note]]` → `[[Note]]`) ; une méta-note générique (`[[Plan]]`, `[[_MOC]]`, `[[Audit]]`…) devient `[[Plan-<cluster>]]` si cette note existe (`--meta-names` pour changer la liste) ; une correspondance approximative au-dessus de 92 % (`--threshold`) est appliquée. Le reste part dans le fichier JSON : remplissez `resolution` pour chaque cas, puis `--apply`. Seul le corps des notes est réécrit.
+Un lien est cassé quand Obsidian ne le résout pas (mêmes règles que `vault-lint`). Dans l'ordre : un lien préfixé par un chemin faux dont le nom de note existe **une seule fois** est réécrit (`[[a/b/Note]]` → `[[Note]]`) ; une méta-note générique (`[[Plan]]`, `[[_MOC]]`, `[[Audit]]`…) devient `[[Plan-<cluster>]]` si cette note existe (`--meta-names` pour changer la liste) ; une correspondance approximative est appliquée seulement si **un seul** candidat dépasse 92 % (`--threshold`) et que ce nom n'est pas porté par plusieurs notes. Tout le reste part dans le fichier JSON : remplissez `resolution` pour chaque cas, puis `--apply`.
+
+Seul le corps des notes est réécrit, hors code ; l'alias, le titre et l'échappement `\|` des tableaux sont conservés. `--apply` valide toutes les décisions avant la première écriture : une note hors du coffre ou une cible contenant `[`, `]`, `|`, `#`, `^` ou un saut de ligne fait échouer l'ensemble, sans rien modifier.
 
 ### `vault-frontmatter`
 
@@ -99,7 +109,7 @@ vault-frontmatter ~/mon-coffre --dry-run
 vault-frontmatter ~/mon-coffre --cluster-roots Projets,Recherche
 ```
 
-Ajoute `date` (date de modification du fichier), `tags`, `type` (déduit du nom), `status: active`, `source`, `cluster`, `verified` quand ils manquent. Ne remplace jamais une valeur existante. Les notes au YAML illisible sont laissées telles quelles.
+Ajoute `date` (date de modification du fichier), `tags`, `type` (déduit du nom), `status: active`, `source`, `cluster`, `verified` quand ils manquent. Ne remplace jamais une valeur existante : les champs manquants sont ajoutés en fin de bloc, et le YAML existant (ordre, guillemets, commentaires) reste à l'octet près. Le résultat est relu avant écriture ; s'il ne correspond pas exactement (frontmatter en style `{…}`, par exemple), la note n'est pas touchée.
 
 ### `vault-hash`
 
@@ -138,6 +148,8 @@ pytest -q
 ```
 
 Les tests construisent un faux coffre dans un dossier temporaire ; aucun ne lit de vrai coffre.
+
+Les problèmes de sécurité se signalent en privé : voir [SECURITY.md](SECURITY.md).
 
 ## Licence
 

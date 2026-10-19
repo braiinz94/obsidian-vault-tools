@@ -24,7 +24,9 @@ def test_normalizer_completes_without_overwriting(vault, capsys):
     assert fm["status"] == "active"
     assert fm["cluster"] == "alpha"
     assert fm["type"] == "note"
-    assert list(fm)[:7] == frontmatter_normalizer.REQUIRED
+    # Les champs existants restent en tête, à l'identique ; les manquants sont ajoutés après
+    assert list(fm)[:2] == ["tags", "auteur"]
+    assert page.read_text(encoding="utf-8").startswith("---\ntags: [garde]\nauteur: moi\n")
     assert page.read_text(encoding="utf-8").endswith("Corps intact\n")
     assert "normalisée : 1" in capsys.readouterr().out
 

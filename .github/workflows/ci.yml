@@ -43,4 +43,9 @@ jobs:
         run: mypy src
 
       - name: Tests
-        run: pytest -q --cov=src --cov-report=term-missing
+        run: pytest -q --cov=src --cov-report=term-missing --cov-fail-under=90
+
+      - name: Paquet
+        run: |
+          python -m pip install build
+          python -m build

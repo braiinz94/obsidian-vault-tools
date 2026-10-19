@@ -1,7 +1,8 @@
 """Lint d'un coffre Obsidian.
 
 Contrôles bloquants (code de sortie 1 si au moins un problème) :
-  1. Wikilinks cassés
+  1. Wikilinks cassés (résolus comme Obsidian : sans tenir compte de la casse, par nom,
+     par chemin ou vers une pièce jointe ; les liens dans le code sont ignorés)
   2. Notes orphelines (ni lien sortant ni lien entrant)
   3. Frontmatter absent
   4. Frontmatter invalide ou incomplet (date, tags, type, status)
@@ -25,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import sys
 import time
 from collections.abc import Callable, Sequence
@@ -33,12 +35,16 @@ from pathlib import Path
 from typing import Any
 
 from ._common import (
+    LinkIndex,
     extract_wikilinks,
     is_hidden,
+    iter_files,
     notes_root,
     parse_csv,
     parse_frontmatter,
+    read_text,
     resolve_vault,
+    safe,
 )
 
 REQUIRED_FIELDS = frozenset({"date", "tags", "type", "status"})
@@ -88,21 +94,16 @@ class LintReport:
 
 
 def md_files(root: Path, exclude: frozenset[str] = frozenset()) -> list[Path]:
-    """Notes du dossier, hors .obsidian/.git et hors dossiers exclus."""
-    return sorted(
+    """Notes du dossier, hors dossiers cachés et hors dossiers exclus."""
+    return [
         p
-        for p in root.rglob("*.md")
-        if not is_hidden(p) and not any(part in exclude for part in p.relative_to(root).parts)
-    )
+        for p in iter_files(root)
+        if not any(part in exclude for part in p.relative_to(root).parts)
+    ]
 
 
 def _is_contested(fm: object) -> bool:
     return isinstance(fm, dict) and "contested" in (fm.get("status"), fm.get("statut"))
-
-
-def _basename(target: str) -> str:
-    # Obsidian accepte [[dossier/Note]] : on résout par le nom seul
-    return target.rsplit("/", 1)[-1]
 
 
 def check_structure(root: Path, cfg: LintConfig) -> list[str]:
@@ -128,10 +129,30 @@ def check_structure(root: Path, cfg: LintConfig) -> list[str]:
     return violations
 
 
+def _git_dir(vault: Path) -> Path | None:
+    dot_git = vault / ".git"
+    if dot_git.is_dir():
+        return dot_git
+    if dot_git.is_file():  # worktree ou sous-module : « gitdir: <chemin> »
+        text = read_text(dot_git) or ""
+        if text.startswith("gitdir:"):
+            gitdir = Path(text.removeprefix("gitdir:").strip())
+            return gitdir if gitdir.is_absolute() else (vault / gitdir).resolve()
+    return None
+
+
 def check_git_remote(vault: Path) -> list[str]:
-    config = vault / ".git" / "config"
-    if config.exists() and "[remote " in config.read_text(encoding="utf-8", errors="replace"):
-        return ["Remote git configuré alors que le coffre doit rester local"]
+    """Lit la configuration git sans lancer git (aucun code du dépôt n'est exécuté)."""
+    gitdir = _git_dir(vault)
+    if gitdir is None:
+        return []
+    configs = [gitdir / "config"]
+    commondir = gitdir / "commondir"
+    if commondir.is_file():
+        configs.append((gitdir / (read_text(commondir) or "").strip() / "config").resolve())
+    for config in configs:
+        if config.is_file() and re.search(r"^\s*\[remote\s", read_text(config) or "", re.M):
+            return ["Remote git configuré alors que le coffre doit rester local"]
     return []
 
 
@@ -143,10 +164,11 @@ def check_hub_coverage(root: Path, vault: Path, cfg: LintConfig) -> tuple[list[s
         return time.strftime("%Y-%m-%d", time.localtime(p.stat().st_mtime))
 
     for pages_dir in sorted(root.rglob("pages")):
-        if not pages_dir.is_dir():
+        rel_parts = pages_dir.relative_to(root).parts
+        if not pages_dir.is_dir() or is_hidden(Path(*rel_parts)):
             continue
         cluster_root = pages_dir.parent
-        if any(part in cfg.exclude for part in cluster_root.relative_to(root).parts):
+        if any(part in cfg.exclude for part in rel_parts):
             continue
         hubs = [
             *cluster_root.glob("_MOC-*.md"),
@@ -155,10 +177,10 @@ def check_hub_coverage(root: Path, vault: Path, cfg: LintConfig) -> tuple[list[s
         ]
         hub_links: set[str] = set()
         for hub in hubs:
-            hub_links |= extract_wikilinks(hub.read_text(encoding="utf-8", errors="replace"))
+            hub_links |= {t.casefold() for t in extract_wikilinks(read_text(hub) or "")}
         moved_today = 0
-        for pg in sorted(pages_dir.glob("*.md")):
-            if pg.stem not in hub_links:
+        for pg in sorted(p for p in pages_dir.glob("*.md") if p.is_file()):
+            if pg.stem.casefold() not in hub_links and pg.name.casefold() not in hub_links:
                 outside.append(pg.relative_to(vault).as_posix())
             if day(pg) == today:
                 moved_today += 1
@@ -170,13 +192,11 @@ def check_hub_coverage(root: Path, vault: Path, cfg: LintConfig) -> tuple[list[s
     return outside, stale
 
 
-def _link(target: str, source: str, names: set[str], incoming: dict[str, set[str]]) -> bool:
+def _link(target: str, source: str, index: LinkIndex, incoming: dict[str, set[str]]) -> bool:
     """Enregistre le lien entrant ; renvoie False si la cible n'existe pas."""
-    for name in (target, _basename(target)):
-        if name in names:
-            incoming[name].add(source)
-            return True
-    return False
+    for stem in index.notes_for(target):
+        incoming.setdefault(stem, set()).add(source)
+    return index.exists(target)
 
 
 def _check_frontmatter(fm: object, rel: str, report: LintReport) -> None:
@@ -195,14 +215,13 @@ def run_lint(vault: Path, root: Path, cfg: LintConfig) -> LintReport:
     files = md_files(root, cfg.exclude)
     report.files = len(files)
     # Les wikilinks se résolvent dans tout le coffre, dossiers exclus compris (comme Obsidian)
-    resolution_files = md_files(root)
-    service_files = [vault / name for name in cfg.service_files if (vault / name).exists()]
-    names = {p.stem for p in resolution_files + service_files}
+    index = LinkIndex.build(vault)
+    service_files = [vault / name for name in cfg.service_files if (vault / name).is_file()]
 
     outgoing: dict[str, set[str]] = {}
-    incoming: dict[str, set[str]] = {n: set() for n in names}
+    incoming: dict[str, set[str]] = {}
     contested_by_stem: dict[str, bool] = {}
-    texts = {f: f.read_text(encoding="utf-8", errors="replace") for f in files}
+    texts = {f: t for f in files if (t := read_text(f)) is not None}
 
     for f, text in texts.items():
         fm = parse_frontmatter(text)
@@ -211,23 +230,23 @@ def run_lint(vault: Path, root: Path, cfg: LintConfig) -> LintReport:
         outgoing[f.stem] = links
         rel = f.relative_to(vault).as_posix()
         for target in links:
-            if not _link(target, f.stem, names, incoming):
+            if not _link(target, f.stem, index, incoming):
                 report.broken.append((rel, target))
         _check_frontmatter(fm, rel, report)
 
     # Les fichiers de service (index.md, README.md…) comptent comme liens entrants,
     # mais ne sont pas lintés : ils contiennent souvent des exemples de syntaxe.
     for f in service_files:
-        for target in extract_wikilinks(f.read_text(encoding="utf-8", errors="replace")):
-            _link(target, f.stem, names, incoming)
+        for target in extract_wikilinks(read_text(f) or ""):
+            _link(target, f.stem, index, incoming)
 
     report.orphans = sorted(
-        {f.stem for f in files if not outgoing.get(f.stem) and not incoming.get(f.stem)}
+        {f.stem for f in texts if not outgoing.get(f.stem) and not incoming.get(f.stem)}
     )
 
-    index = vault / "index.md"
-    if index.exists():
-        report.index_lines = len(index.read_text(encoding="utf-8", errors="replace").splitlines())
+    index_md = vault / "index.md"
+    if index_md.is_file():
+        report.index_lines = len((read_text(index_md) or "").splitlines())
 
     contested = {s for s, flag in contested_by_stem.items() if flag}
     report.contested_pages = len(contested)
@@ -235,7 +254,7 @@ def run_lint(vault: Path, root: Path, cfg: LintConfig) -> LintReport:
         if contested_by_stem.get(source):
             continue  # les notes contestées peuvent se citer entre elles
         report.contested_refs.extend(
-            (source, t) for t in sorted(targets) if t in contested or _basename(t) in contested
+            (source, t) for t in sorted(targets) if index.notes_for(t) & contested
         )
 
     report.structure = check_structure(root, cfg)
@@ -247,13 +266,13 @@ def run_lint(vault: Path, root: Path, cfg: LintConfig) -> LintReport:
 
 def _print_list(items: Sequence[object], fmt: Callable[[Any], str] = str) -> None:
     for item in items[:MAX_LISTED]:
-        print(f"  - {fmt(item)}")
+        print(f"  - {safe(fmt(item))}")
     if len(items) > MAX_LISTED:
         print(f"  ... et {len(items) - MAX_LISTED} autres")
 
 
 def print_report(r: LintReport) -> None:
-    print(f"# Lint — {r.vault}")
+    print(f"# Lint — {safe(r.vault)}")
     print(f"\n## Files: {r.files}")
     print(f"\n## Broken links: {len(r.broken)}")
     _print_list(r.broken, lambda x: f"{x[0]} → [[{x[1]}]]")

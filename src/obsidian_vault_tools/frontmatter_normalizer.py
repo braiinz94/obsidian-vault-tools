@@ -1,7 +1,9 @@
 """Ajoute les champs de frontmatter YAML manquants sur toutes les notes.
 
-Ne remplace jamais une valeur existante : il complète seulement. Les notes dont
-le YAML est illisible sont laissées telles quelles et comptées à part.
+Ne remplace jamais une valeur existante : les champs manquants sont ajoutés en fin
+de bloc, le YAML existant (ordre, guillemets, commentaires) reste tel quel. Les notes
+au YAML illisible, non UTF-8 ou impossibles à compléter proprement sont laissées
+intactes et comptées à part. Écriture atomique, fins de ligne et BOM conservés.
 
 Usage :
     vault-frontmatter [coffre] [--dry-run] [--notes-dir wiki] [--cluster-roots A,B]
@@ -16,7 +18,18 @@ from typing import Any
 
 import yaml
 
-from ._common import cluster_of, iter_markdown, notes_root, parse_csv, resolve_vault
+from ._common import (
+    cluster_of,
+    iter_markdown,
+    load_note,
+    load_yaml,
+    notes_root,
+    parse_csv,
+    resolve_vault,
+    save_note,
+    split_frontmatter,
+    yaml_of,
+)
 
 REQUIRED = ["date", "tags", "type", "status", "source", "cluster", "verified"]
 RESOURCE_HINTS = ("audit", "plan", "debrief", "fact-check", "schema", "instruction")
@@ -37,40 +50,52 @@ def infer_date(path: Path) -> str:
     return datetime.fromtimestamp(path.stat().st_mtime).strftime("%Y-%m-%d")
 
 
-def split_fm(text: str) -> tuple[dict | None, str]:
-    """(frontmatter, corps). frontmatter vaut None si le YAML est illisible."""
-    if text.startswith("---\n") or text.startswith("---\r\n"):
-        end = text.find("\n---", 4)
-        if end != -1:
-            try:
-                fm = yaml.safe_load(text[4:end])
-            except yaml.YAMLError:
-                return None, text
-            rest = text[end + 4 :]
-            if rest.startswith("\r\n"):
-                rest = rest[2:]
-            elif rest.startswith("\n"):
-                rest = rest[1:]
-            return (fm if isinstance(fm, dict) else {}), rest
-    return {}, text
+def _dump(fields: dict[str, Any], newline: str) -> str:
+    text = yaml.safe_dump(fields, allow_unicode=True, sort_keys=False, default_flow_style=False)
+    return text.replace("\n", newline)
 
 
-def serialize_fm(fm: dict) -> str:
-    ordered = {k: fm[k] for k in REQUIRED if k in fm}
-    ordered.update({k: v for k, v in fm.items() if k not in ordered})
-    body = yaml.safe_dump(
-        ordered, allow_unicode=True, sort_keys=False, default_flow_style=False
-    ).strip()
-    return f"---\n{body}\n---\n\n"
+def complete(text: str, missing: dict[str, Any], data: dict[str, Any], block: str) -> str | None:
+    """Texte complété ; le YAML existant est conservé à l'octet près (commentaires compris).
+
+    None si l'ajout en fin de bloc ne relit pas exactement le résultat attendu
+    (frontmatter en style « {…} » par exemple) : la note est alors laissée intacte.
+    """
+    newline = "\r\n" if "\r\n" in (block or text) else "\n"
+    addition = _dump(missing, newline)
+    if not block:
+        return f"---{newline}{addition}---{newline}{newline}{text}"
+    lines = block.splitlines(keepends=True)
+    raw = yaml_of(block)
+    if raw and not raw.endswith("\n"):
+        raw += newline
+    new_yaml = raw + addition
+    try:
+        if load_yaml(new_yaml) != {**data, **missing}:
+            return None
+    except yaml.YAMLError:
+        return None
+    body = text[len(block) :]
+    return lines[0] + new_yaml + lines[-1] + body
 
 
 def normalize(
     path: Path, root: Path, cluster_roots: frozenset[str] | None = None, dry: bool = False
 ) -> str:
-    text = path.read_text(encoding="utf-8", errors="replace")
-    fm, body = split_fm(text)
-    if fm is None:
-        return "yaml invalide (ignorée)"
+    note = load_note(path)
+    if note is None:
+        return "illisible (ignorée)"
+    block, _ = split_frontmatter(note.text)
+    data: Any = {}
+    if block:
+        try:
+            data = load_yaml(yaml_of(block))
+        except yaml.YAMLError:
+            return "yaml invalide (ignorée)"
+        if data is None:
+            data = {}
+        if not isinstance(data, dict):
+            return "yaml non clé/valeur (ignorée)"
 
     defaults: dict[str, Any] = {
         "date": infer_date(path),
@@ -81,12 +106,14 @@ def normalize(
         "cluster": cluster_of(path, root, cluster_roots),
         "verified": None,
     }
-    missing = {k: v for k, v in defaults.items() if k not in fm}
+    missing = {k: v for k, v in defaults.items() if k not in data}
     if not missing:
         return "déjà conforme"
-    fm.update(missing)
+    new_text = complete(note.text, missing, data, block)
+    if new_text is None:
+        return "frontmatter non complétable (ignorée)"
     if not dry:
-        path.write_text(serialize_fm(fm) + body, encoding="utf-8")
+        save_note(note, new_text)
     return "normalisée"
 
 

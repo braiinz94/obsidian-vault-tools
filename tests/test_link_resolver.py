@@ -74,7 +74,7 @@ def test_apply_mode(vault, tmp_path, capsys):
     body = src.read_text(encoding="utf-8")
     assert "[[Bonne-cible]]" in body
     assert "[[Autre]]" in body
-    assert "Décisions appliquées : 1" in capsys.readouterr().out
+    assert "Fichiers modifiés : 1" in capsys.readouterr().out
 
 
 def test_custom_meta_names(vault, tmp_path):
